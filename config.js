@@ -14,5 +14,5 @@ export const API_URL = Platform.select({
   default: `http://${LOCAL_IP}:5000/api`,
 });
  */
-export const API_URL = 'https://reminder-app-backend-3wbx.onrender.com/api';
+export const API_URL = 'https://reminder-app-backend-3wbx.onrender.com/api/todos';
 console.log('API_URL:', API_URL);
