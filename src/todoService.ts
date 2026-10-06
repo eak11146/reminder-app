@@ -2,8 +2,9 @@ import { Todo, TodoInput } from "./types";
 import { scheduleFor, cancelNotif } from "./notifications";
 
 // เปลี่ยน IP นี้เป็น IP เครื่องคุณ หรือ URL Render ตอน deploy
-const API_URL = "http://192.168.110.149:5000/api/todos"; 
+//const API_URL = "http://192.168.110.149:5000/api/todos"; 
 // ตอนขึ้น Render จะเป็น https://reminder-backend-xxxx.onrender.com/api/todos
+const API_URL = "https://reminder-app-backend-3wbx.onrender.com/api/todos";
 
 export const todoService = {
   list: async (): Promise<Todo[]> => {
