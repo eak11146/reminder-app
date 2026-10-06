@@ -1,47 +1,57 @@
-import AsyncStorage from "@react-native-async-storage/async-storage";
 import { Todo, TodoInput } from "./types";
 import { scheduleFor, cancelNotif } from "./notifications";
 
-const KEY = "todos-v1";
-
-async function readAll(): Promise<Todo[]> {
-  const raw = await AsyncStorage.getItem(KEY);
-  return raw ? JSON.parse(raw) : [];
-}
-async function writeAll(list: Todo[]) {
-  await AsyncStorage.setItem(KEY, JSON.stringify(list));
-}
+// เปลี่ยน IP นี้เป็น IP เครื่องคุณ หรือ URL Render ตอน deploy
+const API_URL = "http://192.168.110.149:5000/api/todos"; 
+// ตอนขึ้น Render จะเป็น https://reminder-backend-xxxx.onrender.com/api/todos
 
 export const todoService = {
-  list: readAll,
-
-  async create(input: TodoInput): Promise<Todo> {
-    const todo: Todo = {
-      ...input,
-      id: Date.now().toString(),
-      done: false,
-      notifId: null,
-    };
-    todo.notifId = await scheduleFor(todo);
-    await writeAll([...(await readAll()), todo]);
-    return todo;
+  list: async (): Promise<Todo[]> => {
+    const res = await fetch(API_URL);
+    const data = await res.json();
+    // ตั้งแจ้งเตือนใหม่ทุกครั้งที่โหลดจากคลาวด์
+    for (const t of data) {
+      if (!t.done) await scheduleFor(t);
+    }
+    return data.map((t:any)=> ({...t, id: t._id || t.id }));
   },
 
-  async update(id: string, patch: Partial<TodoInput> & { done?: boolean }): Promise<Todo> {
-    const list = await readAll();
-    const old = list.find((x) => x.id === id);
-    if (!old) throw new Error("ไม่พบรายการ");
-    await cancelNotif(old.notifId);
-    const next: Todo = { ...old, ...patch };
-    next.notifId = await scheduleFor(next);
-    await writeAll(list.map((x) => (x.id === id ? next : x)));
-    return next;
+  create: async (input: TodoInput): Promise<Todo> => {
+    const temp: any = { ...input, done: false, notifId: null };
+    temp.notifId = await scheduleFor(temp);
+    const res = await fetch(API_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(temp)
+    });
+    const saved = await res.json();
+    return { ...saved, id: saved._id };
   },
 
-  async remove(id: string) {
-    const list = await readAll();
-    const old = list.find((x) => x.id === id);
+  update: async (id: string, patch: any): Promise<Todo> => {
+    // ยกเลิกอันเก่า
+    const oldListRes = await fetch(API_URL);
+    const oldList = await oldListRes.json();
+    const old = oldList.find((x:any)=> (x._id||x.id)===id);
     if (old) await cancelNotif(old.notifId);
-    await writeAll(list.filter((x) => x.id !== id));
+
+    const nextTemp = { ...old, ...patch };
+    const newNotifId = await scheduleFor(nextTemp);
+
+    const res = await fetch(`${API_URL}/${id}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ...patch, notifId: newNotifId })
+    });
+    const saved = await res.json();
+    return { ...saved, id: saved._id };
   },
+
+  remove: async (id: string) => {
+    const oldListRes = await fetch(API_URL);
+    const oldList = await oldListRes.json();
+    const old = oldList.find((x:any)=> (x._id||x.id)===id);
+    if (old) await cancelNotif(old.notifId);
+    await fetch(`${API_URL}/${id}`, { method: 'DELETE' });
+  }
 };
