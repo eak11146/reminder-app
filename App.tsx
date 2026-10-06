@@ -1,99 +1,183 @@
-import { useEffect, useState } from "react";
-import { View, Text, Button, ScrollView, Platform, StyleSheet } from "react-native";
-import * as Notifications from "expo-notifications";
+import { useEffect, useMemo, useState } from "react";
+import { View, Text, TextInput, Pressable, Alert, ScrollView, StyleSheet } from "react-native";
+import { Priority, Todo, TodoInput } from "./src/types";
+import { ORDER, PAGE_SIZE, PRIORITY_LABEL } from "./src/constants";
+import { setupNotifications } from "./src/notifications";
+import { todoService } from "./src/todoService";
+import TodoCard from "./src/components/TodoCard";
+import TodoForm from "./src/components/TodoForm";
 
-Notifications.setNotificationHandler({
-  handleNotification: async () => ({
-    shouldShowAlert: true,
-    shouldPlaySound: true,
-    shouldSetBadge: false,
-    shouldShowBanner: true,
-    shouldShowList: true,
-  }),
-});
+type Filter = "all" | Priority;
 
 export default function App() {
-  const [log, setLog] = useState<string[]>([]);
-  const add = (m: string) =>
-    setLog((l) => [`${new Date().toLocaleTimeString()}  ${m}`, ...l]);
+  const [todos, setTodos] = useState<Todo[]>([]);
+  const [page, setPage] = useState(0);
+  const [search, setSearch] = useState("");
+  const [filter, setFilter] = useState<Filter>("all");
+  const [formOpen, setFormOpen] = useState(false);
+  const [editing, setEditing] = useState<Todo | null>(null);
 
   useEffect(() => {
     (async () => {
-      if (Platform.OS === "android") {
-        await Notifications.setNotificationChannelAsync("default", {
-          name: "Reminder",
-          importance: Notifications.AndroidImportance.MAX,
-          vibrationPattern: [0, 250, 250, 250],
-        });
-        add("สร้าง channel แล้ว");
-      }
-      const { status } = await Notifications.requestPermissionsAsync();
-      add("สิทธิ์: " + status);
+      await setupNotifications();
+      setTodos(await todoService.list());
     })();
-
-    // เด้งตอนแอปเปิดอยู่
-    const sub1 = Notifications.addNotificationReceivedListener((n) =>
-      add("ได้รับ: " + n.request.content.title)
-    );
-    // ตอนกดที่ notification
-    const sub2 = Notifications.addNotificationResponseReceivedListener((r) =>
-      add("ถูกกด: " + r.notification.request.content.title)
-    );
-    return () => {
-      sub1.remove();
-      sub2.remove();
-    };
   }, []);
 
-  const schedule = async (seconds: number, title: string) => {
+  // กรอง -> เรียง (ยังไม่เสร็จก่อน, แล้ว priority, แล้ววันที่) -> แบ่งหน้า
+  const visible = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    return todos
+      .filter((t) => filter === "all" || t.priority === filter)
+      .filter((t) => !q || t.title.toLowerCase().includes(q) || t.description.toLowerCase().includes(q))
+      .sort(
+        (a, b) =>
+          Number(a.done) - Number(b.done) ||
+          ORDER[a.priority] - ORDER[b.priority] ||
+          new Date(a.dueAt).getTime() - new Date(b.dueAt).getTime()
+      );
+  }, [todos, search, filter]);
+
+  const totalPages = Math.max(1, Math.ceil(visible.length / PAGE_SIZE));
+  const currentPage = Math.min(page, totalPages - 1);
+  const pageItems = visible.slice(currentPage * PAGE_SIZE, (currentPage + 1) * PAGE_SIZE);
+
+  const openAdd = () => { setEditing(null); setFormOpen(true); };
+  const openEdit = (t: Todo) => { setEditing(t); setFormOpen(true); };
+
+  const save = async (input: TodoInput) => {
     try {
-      const id = await Notifications.scheduleNotificationAsync({
-        content: { title, body: `ตั้งไว้ ${seconds} วินาที` },
-        trigger: {
-          type: Notifications.SchedulableTriggerInputTypes.TIME_INTERVAL,
-          seconds,
-          channelId: "default",
-        },
-      });
-      add(`ตั้งแล้ว id=${id.slice(0, 6)} (${seconds}s)`);
+      if (editing) {
+        const next = await todoService.update(editing.id, input);
+        setTodos((l) => l.map((x) => (x.id === next.id ? next : x)));
+      } else {
+        const created = await todoService.create(input);
+        setTodos((l) => [...l, created]);
+      }
+      setFormOpen(false);
     } catch (e: any) {
-      add("ERROR: " + e.message);
+      Alert.alert("บันทึกไม่สำเร็จ", e.message);
     }
   };
 
-  const listScheduled = async () => {
-    const all = await Notifications.getAllScheduledNotificationsAsync();
-    add(`รอเด้งอยู่ ${all.length} อัน`);
+  const toggle = async (t: Todo) => {
+    const next = await todoService.update(t.id, { done: !t.done });
+    setTodos((l) => l.map((x) => (x.id === next.id ? next : x)));
   };
 
-  const cancelAll = async () => {
-    await Notifications.cancelAllScheduledNotificationsAsync();
-    add("ยกเลิกทั้งหมดแล้ว");
+  const remove = (t: Todo) => {
+    Alert.alert("ลบรายการ", `ลบ "${t.title}" และยกเลิกการแจ้งเตือน?`, [
+      { text: "ยกเลิก", style: "cancel" },
+      {
+        text: "ลบ",
+        style: "destructive",
+        onPress: async () => {
+          await todoService.remove(t.id);
+          setTodos((l) => l.filter((x) => x.id !== t.id));
+        },
+      },
+    ]);
   };
+
+  const filters: Filter[] = ["all", "high", "medium", "low"];
 
   return (
     <View style={s.container}>
-      <Text style={s.h1}>Notification Test</Text>
-      <View style={s.btns}>
-        <Button title="1) เด้งใน 2 วินาที (แอปเปิดอยู่)" onPress={() => schedule(2, "ทดสอบ foreground")} />
-        <Button title="2) เด้งใน 10 วินาที (กด Home ออกไปรอ)" onPress={() => schedule(10, "ทดสอบ background")} />
-        <Button title="3) เด้งใน 30 วินาที (ล็อกหน้าจอรอ)" onPress={() => schedule(30, "ทดสอบ lock screen")} />
-        <Button title="ดูรายการที่ตั้งไว้" onPress={listScheduled} />
-        <Button title="ยกเลิกทั้งหมด" color="red" onPress={cancelAll} />
+      <Text style={s.h1}>Reminder</Text>
+      <Text style={s.sub}>{todos.length} รายการ</Text>
+
+      <TextInput
+        style={s.search}
+        value={search}
+        onChangeText={(v) => { setSearch(v); setPage(0); }}
+        placeholder="🔍 ค้นหา"
+      />
+
+      <View style={s.filters}>
+        {filters.map((f) => (
+          <Pressable
+            key={f}
+            onPress={() => { setFilter(f); setPage(0); }}
+            style={[s.chip, filter === f && s.chipOn]}
+          >
+            <Text style={filter === f ? s.chipTxtOn : s.chipTxt}>
+              {f === "all" ? "ทั้งหมด" : PRIORITY_LABEL[f]}
+            </Text>
+          </Pressable>
+        ))}
       </View>
-      <ScrollView style={s.log}>
-        {log.map((l, i) => (
-          <Text key={i} style={s.logText}>{l}</Text>
+
+      <ScrollView style={{ flex: 1 }}>
+        {pageItems.length === 0 && (
+          <Text style={s.empty}>
+            {todos.length === 0 ? "ยังไม่มีรายการ กด + เพื่อเพิ่ม" : "ไม่พบรายการที่ตรงเงื่อนไข"}
+          </Text>
+        )}
+        {pageItems.map((t) => (
+          <TodoCard
+            key={t.id}
+            todo={t}
+            onToggle={() => toggle(t)}
+            onEdit={() => openEdit(t)}
+            onDelete={() => remove(t)}
+          />
         ))}
       </ScrollView>
+
+      <View style={s.pager}>
+        <Pressable
+          disabled={currentPage === 0}
+          onPress={() => setPage(currentPage - 1)}
+          style={[s.pageBtn, currentPage === 0 && s.disabled]}
+        >
+          <Text style={s.pageTxt}>◀ ก่อนหน้า</Text>
+        </Pressable>
+        <Text style={s.pageInfo}>{currentPage + 1} / {totalPages}</Text>
+        <Pressable
+          disabled={currentPage >= totalPages - 1}
+          onPress={() => setPage(currentPage + 1)}
+          style={[s.pageBtn, currentPage >= totalPages - 1 && s.disabled]}
+        >
+          <Text style={s.pageTxt}>ถัดไป ▶</Text>
+        </Pressable>
+      </View>
+
+      <Pressable style={s.fab} onPress={openAdd}>
+        <Text style={s.fabTxt}>+</Text>
+      </Pressable>
+
+      <TodoForm
+        visible={formOpen}
+        editing={editing}
+        onClose={() => setFormOpen(false)}
+        onSave={save}
+      />
     </View>
   );
 }
 
 const s = StyleSheet.create({
-  container: { flex: 1, paddingTop: 60, paddingHorizontal: 16 },
-  h1: { fontSize: 24, fontWeight: "bold", marginBottom: 12 },
-  btns: { gap: 8 },
-  log: { marginTop: 16, backgroundColor: "#eee", padding: 8, borderRadius: 8 },
-  logText: { fontSize: 12, marginBottom: 2 },
+  container: { flex: 1, backgroundColor: "#f4f4f5", paddingTop: 56, paddingHorizontal: 16 },
+  h1: { fontSize: 28, fontWeight: "900" },
+  sub: { color: "#71717a", marginBottom: 12 },
+  search: { backgroundColor: "#fff", borderRadius: 12, padding: 12, marginBottom: 10 },
+  filters: { flexDirection: "row", gap: 8, marginBottom: 12 },
+  chip: {
+    paddingHorizontal: 14, paddingVertical: 8, borderRadius: 999,
+    backgroundColor: "#fff", borderWidth: 1, borderColor: "#d4d4d8",
+  },
+  chipOn: { backgroundColor: "#000", borderColor: "#000" },
+  chipTxt: { color: "#000", fontWeight: "700" },
+  chipTxtOn: { color: "#fff", fontWeight: "700" },
+  empty: { textAlign: "center", color: "#a1a1aa", marginTop: 40 },
+  pager: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingVertical: 12 },
+  pageBtn: { backgroundColor: "#000", paddingHorizontal: 14, paddingVertical: 10, borderRadius: 10 },
+  pageTxt: { color: "#fff", fontWeight: "700" },
+  pageInfo: { fontWeight: "700" },
+  disabled: { opacity: 0.3 },
+  fab: {
+    position: "absolute", right: 20, bottom: 80, width: 56, height: 56, borderRadius: 28,
+    backgroundColor: "#2563eb", alignItems: "center", justifyContent: "center", elevation: 5,
+  },
+  fabTxt: { color: "#fff", fontSize: 30, marginTop: -2 },
 });
